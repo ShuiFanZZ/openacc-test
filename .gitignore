@@ -1,0 +1,16 @@
+#object file
+*.obj
+*.exe
+*.dwf
+*.pdb
+
+#other
+*.txt
+*.bat
+
+#dir
+.vs/
+.vscode/
+build/
+matrix/
+out/
