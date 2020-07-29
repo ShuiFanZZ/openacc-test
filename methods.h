@@ -38,3 +38,6 @@ int spmv_csr(int n, int* Ap, int* Ai, double* Ax,
 */
 void matrix_add_openacc(int matrix_size, double **A, double **B, double **C);
 void vector_add_openacc(int vector_size, double *A, double *B, double *C);
+
+
+void spmv_csr_openacc(int n, int *Ap, int *Ai, double *Ax, double *x, double *y);

@@ -5,7 +5,8 @@
 #include "getopt.h"
 #include "methods.h"
 #include "methods_cuda.h"
-#define DIFF 0.00000001
+#include "methods_cusparse.h"
+#define DIFF 0.00001
 #define Times 5
 
 enum MODE
@@ -20,6 +21,7 @@ enum Algorithm
     SPARSE_SOLVE=0,
     ADDITION=1,
     ADDITION_VECTOR=2,
+    SPARSE_MV=3,
 };
 
 int compare (const void* a, const void* b){
@@ -33,7 +35,20 @@ int compare (const void* a, const void* b){
 
 double find_median(double* array, int n){
     qsort(array, n, sizeof(double), compare);
-    return array[Times/2 + 1];
+    return array[Times/2];
+}
+
+int double_match(double a, double b){
+    if (a -b < DIFF && a - b > - DIFF)
+    {
+        return 0;
+    }
+    double d = (a - b) / a;
+    if (d > DIFF || d < - DIFF)
+    {
+        return -1;
+    }
+    return 0;
 }
 
 int main(int argc, char **argv)
@@ -49,7 +64,7 @@ int main(int argc, char **argv)
     char *output = NULL;
 
     int option;
-    while ((option = getopt(argc, argv, "OCSV:A:L:b:o:")) != -1)
+    while ((option = getopt(argc, argv, "MOCSV:A:L:b:o:")) != -1)
     {
         switch (option)
         {
@@ -69,6 +84,9 @@ int main(int argc, char **argv)
             break;
         case 'S':
             algorithm = SPARSE_SOLVE;
+            break;
+        case 'M':
+            algorithm = SPARSE_MV;
             break;
         case 'C':
             mode = CUDA;
@@ -93,7 +111,7 @@ int main(int argc, char **argv)
     double **A, **B, **C;
     double *u, *v, *w;
 
-    if (algorithm == SPARSE_SOLVE)
+    if (algorithm == SPARSE_SOLVE || algorithm == SPARSE_MV)
     {
         f_matrix = fopen(matrix_file, "r");
 
@@ -177,6 +195,11 @@ int main(int argc, char **argv)
         {
             memcpy(x, b, xn * sizeof(double));
         }
+        if (algorithm == SPARSE_MV)
+        {
+            memset(x, 0.0, xn * sizeof(double));
+        }
+        
         
         if (mode == NAIVE && algorithm == SPARSE_SOLVE)
         {
@@ -237,10 +260,33 @@ int main(int argc, char **argv)
             end = omp_get_wtime();
             time_msec[i] = (end - start) * 1000;
         }
-
+        else if (mode == OPENACC && algorithm == SPARSE_MV)
+        {
+            start = omp_get_wtime();
+            spmv_csr_openacc(Ln, Lp, Li, Lv, b, x);
+            end = omp_get_wtime();
+            time_msec[i] = (end - start) * 1000;
+        }
+        else if (mode == NAIVE && algorithm == SPARSE_MV)
+        {
+            start = omp_get_wtime();
+            spmv_csr_cusparse(Ln, Lp, Li, Lv, b, x);
+            
+            end = omp_get_wtime();
+            time_msec[i] = (end - start) * 1000;
+        }
+        else if (mode == CUDA && algorithm == SPARSE_MV)
+        {
+            start = omp_get_wtime();
+            spmv_csr_cuda(Ln, Lp, Li, Lv, b, x);
+            
+            end = omp_get_wtime();
+            time_msec[i] = (end - start) * 1000;
+        }
     }
-
+    
     printf("%f\n", find_median(time_msec, Times));
+
     //verification
     if (algorithm == SPARSE_SOLVE)
     {
@@ -249,7 +295,7 @@ int main(int argc, char **argv)
         spmv_csr(xn, Lp, Li, Lv, x, y);
         for (int i = 0; i < xn; i++)
         {
-            if (y[i] - b[i] > DIFF || y[i] - b[i] < -DIFF)
+            if (double_match(b[i], y[i]) == -1)
             {
                 printf("Verification failed at index %d: expect %.19lf but get %.19lf \n",
                        i, b[i], y[i]);
@@ -257,6 +303,22 @@ int main(int argc, char **argv)
             }
         }
     }
+    else if (algorithm == SPARSE_MV)
+    {
+        double *y = (double *)malloc(xn * sizeof(double));
+        memset(y, 0.0, xn * sizeof(double));
+        spmv_csr(xn, Lp, Li, Lv, b, y);
+        for (int i = 0; i < xn; i++)
+        {
+            if (double_match(x[i], y[i]) == -1)
+            {
+                printf("Verification for spmv failed at index %d: expect %.19lf but get %.19lf \n",
+                       i, y[i], x[i]);
+                return -1;
+            }
+        }
+    }
+    
 
     // Write result x to output
     if (write_output == 1 && output != NULL)

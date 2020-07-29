@@ -107,3 +107,77 @@ void vector_add_cuda(int vector_size, double *A, double *B, double *C)
     cudaFree(B_row);
     cudaFree(C_row);
 }
+
+__global__ void
+spmv_csr_vector_kernel(const int num_rows,
+                       const int *ptr,
+                       const int *indices,
+                       const double *data,
+                       const double *x,
+                       double *y)
+{
+    __shared__ volatile double vals[1024];
+    int thread_id = blockDim.x * blockIdx.x + threadIdx.x; // global thread index
+    int warp_id = thread_id / 32;                          // global warp index
+    int lane = thread_id & (32 - 1);                       // thread index within the warp
+    // each warp process one row
+    int row = warp_id;
+    vals[threadIdx.x] = 0;
+    
+    if (row < num_rows)
+    {
+        int row_start = ptr[row];
+        int row_end = ptr[row + 1];
+        // compute running sum per thread
+        for (int jj = row_start + lane; jj < row_end; jj += 32)
+            vals[threadIdx.x] += data[jj] * x[indices[jj]];
+
+        // reduction within warp to the first thread
+        if (lane < 16)
+            vals[threadIdx.x] += vals[threadIdx.x + 16];
+        if (lane < 8)
+            vals[threadIdx.x] += vals[threadIdx.x + 8];
+        if (lane < 4)
+            vals[threadIdx.x] += vals[threadIdx.x + 4];
+        if (lane < 2)
+            vals[threadIdx.x] += vals[threadIdx.x + 2];
+        if (lane < 1)
+            vals[threadIdx.x] += vals[threadIdx.x + 1];
+        // first thread writes the result
+        if (lane == 0)
+            y[row] += vals[threadIdx.x];
+            
+    }
+}
+
+void spmv_csr_cuda(int n, int *Ap, int *Ai, double *Ax, double *x, double *y)
+{
+    int nz = Ap[n];
+    int *csrRowPtrA, *csrColIndA;
+    double *valA, *valx, *valy; 
+    cudaMalloc((void **)&csrRowPtrA, (n + 1) * sizeof(int));
+    cudaMalloc((void **)&csrColIndA, nz * sizeof(int));
+    cudaMalloc((void **)&valA, nz * sizeof(double));
+    cudaMalloc((void **)&valx, n * sizeof(double));
+    cudaMalloc((void **)&valy, n * sizeof(double));
+    cudaMemcpy(csrRowPtrA, Ap, (n + 1) * sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy(csrColIndA, Ai, nz * sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy(valA, Ax, nz * sizeof(double), cudaMemcpyHostToDevice);
+    cudaMemcpy(valx, x, n * sizeof(double), cudaMemcpyHostToDevice);
+
+    int num_threads = n * 32; // Each warp (32 threads) takes one row
+    int Blocks = (num_threads - 1) / THREAD_PER_BLOCK + 1;
+    spmv_csr_vector_kernel<<<Blocks, THREAD_PER_BLOCK>>>(n, csrRowPtrA, csrColIndA, valA, valx, valy);
+    cudaError_t error = cudaGetLastError();
+    if (error != cudaSuccess)
+    {
+        printf("CUDA error: %s\n", cudaGetErrorString(error));
+        exit(-1);
+    }
+    cudaMemcpy(y, valy, n * sizeof(double), cudaMemcpyDeviceToHost);
+    cudaFree(csrRowPtrA);
+    cudaFree(csrColIndA);
+    cudaFree(valA);
+    cudaFree(valx);
+    cudaFree(valy);
+}

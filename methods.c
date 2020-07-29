@@ -190,3 +190,20 @@ void vector_add_openacc(int vector_size, double *A, double *B, double *C)
   }
  
 }
+
+void spmv_csr_openacc(int n, int *Ap, int *Ai, double *Ax, double *x, double *y)
+{
+  int nz = Ap[n];
+#pragma acc data copyin(Ap[:n+1], Ai[0:nz], Ax[0:nz], x[:n]), copy(y[:n])
+{
+  #pragma acc parallel loop
+  for (int j = 0; j < n; j++)
+  {
+    for (int p = Ap[j]; p < Ap[j + 1]; p++)
+    {
+      y[j] += Ax[p] * x[Ai[p]];
+    }
+  }
+}
+  
+}
