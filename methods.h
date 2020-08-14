@@ -16,6 +16,10 @@ void sptrsv_csr_levelset_openacc(int n, int nz, int* Lp, int* Li, double* Lx,
     int levels, int* levelPtr,
     int* levelSet);
 
+void sptrsv_csr_levelset_openacc_opt(int n, int nz, int* Lp, int* Li, double* Lx,
+    double* x,
+    int levels, int* levelPtr,
+    int* levelSet);
 
 enum visit{
     UNVISITED=0,
@@ -41,3 +45,6 @@ void vector_add_openacc(int vector_size, double *A, double *B, double *C);
 
 
 void spmv_csr_openacc(int n, int *Ap, int *Ai, double *Ax, double *x, double *y);
+void spmv_csr_openacc_vector(int n, int *Ap, int *Ai, double *Ax, double *x, double *y);
+void spmv_csr_openacc_opt(int n, int *Ap, int *Ai, double *Ax, double *x, double *y);
+void spmv_csr_openacc_null(int n, int *Ap, int *Ai, double *Ax, double *x, double *y);

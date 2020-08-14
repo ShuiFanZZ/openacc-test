@@ -56,6 +56,36 @@ void sptrsv_csr_levelset_openacc(int n, int nz, int *Lp, int *Li, double *Lx,
 
 }
 
+void sptrsv_csr_levelset_openacc_opt(int n, int nz, int *Lp, int *Li, double *Lx,
+                                 double *x,
+                                 int levels, int *levelPtr,
+                                 int *levelSet)
+{
+#pragma acc data copy(x[:n]), copyin(levelPtr[:levels + 1], levelSet[:n], Lx[:nz], Li[:nz], Lp[:n + 1])
+  {
+    for (int l = 0; l < levels; l++)
+    {
+      int level_start = levelPtr[l];
+      int level_end = levelPtr[l + 1];
+#pragma acc parallel loop gang worker vector_length(32) num_workers(32) present(x, levelSet, Lx, Li, Lp)
+      for (int k = level_start; k < level_end; k++)
+      {
+        int i = levelSet[k];
+        double temp = 0;
+        int row_start = Lp[i];
+        int row_end = Lp[i + 1] - 1;
+
+#pragma acc loop vector reduction(+:temp)
+        for (int j = row_start; j < row_end; j++)
+        {
+          temp += Lx[j] * x[Li[j]];
+        }
+        x[i] = (x[i] - temp) / Lx[Lp[i + 1] - 1];
+      }
+    }
+  }
+
+}
 /*
  * Simple Sparse matrix-vector multiply
  * 
@@ -204,6 +234,136 @@ void spmv_csr_openacc(int n, int *Ap, int *Ai, double *Ax, double *x, double *y)
       y[j] += Ax[p] * x[Ai[p]];
     }
   }
+}
+  
+}
+
+void spmv_csr_openacc_vector(int n, int *Ap, int *Ai, double *Ax, double *x, double *y)
+{
+  int nz = Ap[n];
+#pragma acc data copyin(Ap[:n + 1], Ai [0:nz], Ax [0:nz], x[:n]), copy(y[:n])
+  {
+#pragma acc parallel loop vector_length(32) num_workers(32) gang worker
+    for (int j = 0; j < n; j++)
+    {
+      double sum = 0;
+      int row_start = Ap[j];
+      int row_end = Ap[j + 1];
+#pragma acc loop reduction(+:sum)  vector
+      for (int p = row_start; p < row_end; p++)
+      {
+        int index = Ai[p];
+        sum += Ax[p] * x[index];
+      }
+
+      y[j] = sum;
+
+      
+    }
+  }
+}
+
+int spmv_csr_adaptive_rowblocks(int *ptr, int totalRows, int *rowBlocks)
+{
+    rowBlocks[0] = 0;
+    int sum = 0;
+    int last_i = 0;
+    int ctr = 1;
+    for (int i = 1; i <= totalRows; i++)
+    {
+        // Count non-zeroes in this row
+        sum += ptr[i] - ptr[i - 1];
+        if (sum == 1024)
+        {
+            // This row fills up LOCAL_SIZE
+            last_i = i;
+            rowBlocks[ctr++] = i;
+            sum = 0;
+        }
+        else if (sum > 1024)
+        {
+            if (i - last_i > 1)
+            {
+                // This extra row will not fit
+                rowBlocks[ctr++] = i - 1;
+                i--;
+            }
+            else if (i - last_i == 1)
+                // This one row is too large
+                rowBlocks[ctr++] = i;
+                
+            last_i = i;
+            sum = 0;
+        }
+    }
+    rowBlocks[ctr++] = totalRows;
+    return ctr;
+}
+void spmv_csr_openacc_opt(int n, int *Ap, int *Ai, double *Ax, double *x, double *y)
+{
+  int nz = Ap[n];
+  int *rowBlocks = (int *)malloc(n * sizeof(int));
+  int num_rowBlocks = spmv_csr_adaptive_rowblocks(Ap, n,rowBlocks);
+
+  #pragma acc data copyin(Ap[:n + 1], Ai [0:nz], Ax [0:nz], x[:n], rowBlocks[:num_rowBlocks]), copy(y[:n])
+  {
+    #pragma acc parallel loop vector_length(1024) gang 
+    for (int j = 0; j < num_rowBlocks; j++)
+    {
+      double vals[1024];
+      int startRow = rowBlocks[j];
+      int endRow = rowBlocks[j + 1];
+      int num_rows = endRow - startRow;
+
+      if (num_rows > 1)
+      {
+        int startIndex = Ap[startRow];
+        int nnz = Ap[endRow] - startIndex;
+
+        #pragma acc loop vector
+        for (int i = 0; i < nnz; i++)
+        {
+          vals[i] = Ax[startIndex + i] * x[Ai[startIndex + i]];
+        }
+
+        #pragma acc loop vector
+        for (int row = startRow; row < endRow; row++)
+        {
+          double temp = 0;
+          #pragma acc loop seq
+          for (int p = Ap[row] - startIndex; p < Ap[row + 1] - startIndex; p++)
+          {
+            temp += vals[p];
+          }
+          y[row] = temp;
+        }
+      }
+      else
+      {
+        double sum = 0;
+        int row_start = Ap[startRow];
+        int row_end = Ap[endRow];
+#pragma acc loop reduction(+:sum) vector
+        for (int p = row_start; p < row_end; p++)
+        {
+          int index = Ai[p];
+          sum += Ax[p] * x[index];
+        }
+
+        y[startRow] = sum;
+      }
+    }
+  }
+
+}
+
+
+void spmv_csr_openacc_null(int n, int *Ap, int *Ai, double *Ax, double *x, double *y)
+{
+  int nz = Ap[n];
+#pragma acc data copyin(Ap[:n+1], Ai[0:nz], Ax[0:nz], x[:n]), copy(y[:n])
+{
+  
 }
   
 }

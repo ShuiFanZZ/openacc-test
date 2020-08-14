@@ -6,9 +6,15 @@ void spmv_csr_cusparse(int n, int *Ap, int *Ai, double *Ax, double *x, double *y
     cusparseCreate(&handle);
     cusparseStatus_t status;
 
+    float transfer_in, computation_time, transfer_out; // timing values
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+
     int nz = Ap[n];
     int *csrRowPtrA, *csrColIndA;
     double *valA, *valx, *valy; 
+    cudaEventRecord(start);
     cudaMalloc((void **)&csrRowPtrA, (n + 1) * sizeof(int));
     cudaMalloc((void **)&csrColIndA, nz * sizeof(int));
     cudaMalloc((void **)&valA, nz * sizeof(double));
@@ -19,6 +25,12 @@ void spmv_csr_cusparse(int n, int *Ap, int *Ai, double *Ax, double *x, double *y
     cudaMemcpy(valA, Ax, nz * sizeof(double), cudaMemcpyHostToDevice);
     cudaMemcpy(valx, x, n * sizeof(double), cudaMemcpyHostToDevice);
     cudaMemcpy(valy, y, n * sizeof(double), cudaMemcpyHostToDevice);
+	
+	cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&transfer_in, start, stop);
+
+    cudaEventRecord(start);
 
     cusparseSpMatDescr_t matA;
     cusparseDnVecDescr_t vecX, vecY;
@@ -44,6 +56,10 @@ void spmv_csr_cusparse(int n, int *Ap, int *Ai, double *Ax, double *x, double *y
     status = cusparseSpMV(handle, CUSPARSE_OPERATION_NON_TRANSPOSE,
                                  &alpha, matA, vecX, &beta, vecY, CUDA_R_64F,
                                  CUSPARSE_CSRMV_ALG1, buffer);
+    
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&computation_time, start, stop);
 
     if (status != CUSPARSE_STATUS_SUCCESS)
     {
@@ -54,8 +70,15 @@ void spmv_csr_cusparse(int n, int *Ap, int *Ai, double *Ax, double *x, double *y
     cusparseDestroyDnVec(vecX);
     cusparseDestroyDnVec(vecY);
 
-    
+    cudaEventRecord(start);
     cudaMemcpy(y, valy, n * sizeof(double), cudaMemcpyDeviceToHost);
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&transfer_out, start, stop);
+    // print timing results
+    printf("%15.2f %15.2f %15.2f\n", transfer_in,
+            computation_time, transfer_out);
+
     cudaFree(buffer);
     cudaFree(csrRowPtrA);
     cudaFree(csrColIndA);
