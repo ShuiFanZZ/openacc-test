@@ -1,5 +1,6 @@
 #include <cuda_runtime.h>
 #include <cuda.h>
+#include <cublas_v2.h>
 #include <stdio.h>
 #define THREAD_PER_BLOCK 512
 #define BLOCK_DIM 1024
@@ -51,7 +52,19 @@ void spmv_csr_cuda(int n, int *Ap, int *Ai, double *Ax, double *x, double *y);
 extern "C" {
 #endif
 
-void spmv_csr_cuda_opt(int n, int *Ap, int *Ai, double *Ax, double *x, double *y);
+void spmv_csr_cuda_adaptive(int n, int *Ap, int *Ai, double *Ax, double *x, double *y);
+
+#if __cplusplus
+}
+#endif
+
+
+
+#if __cplusplus
+extern "C" {
+#endif
+
+void spmv_bcsr_cuda(int n, int blockDim, int *Bp, int *Bi, int* Br, double *Bx, double *x, double *y, int direction);
 
 #if __cplusplus
 }

@@ -9,6 +9,11 @@
 #define DIFF 0.00001
 #define Times 5
 
+enum DATA_DIRECTION{
+    row_major = 0,
+    column_major = 1,
+};
+
 enum MODE
 {
     NAIVE = 0,
@@ -50,6 +55,8 @@ int double_match(double a, double b){
     }
     return 0;
 }
+
+
 
 int main(int argc, char **argv)
 {
@@ -107,23 +114,45 @@ int main(int argc, char **argv)
     int Ln = 0, Lnz = 0, xn = 0, xnz = 0;
     int *Lp, *Li, *xi;
     double *Lv, *x, *b;
+    int *Br, *Bc, *Bp;
+    int Bn;
+
+    double *bcsrVal;
+    int *bcsrRowPtr, *bcsrColInd, *bcsrRowInd;
+    int blockDim = 16;
+    int num_block_row;
 
     double **A, **B, **C;
     double *u, *v, *w;
 
+    int data_direction = column_major;
+
     if (algorithm == SPARSE_SOLVE || algorithm == SPARSE_MV)
     {
-        f_matrix = fopen(matrix_file, "r");
+        // f_matrix = fopen(matrix_file, "r");
 
-        if (f_matrix == NULL)
-        {
-            printf("Cannot read input file!\n");
-            exit(2);
-        }
+        // if (f_matrix == NULL)
+        // {
+        //     printf("Cannot read input file!\n");
+        //     exit(2);
+        // }
 
-        read_matrix_csr(f_matrix, &Ln, &Lnz, &Lp, &Li, &Lv);
+        // read_matrix_csr(f_matrix, &Ln, &Lnz, &Lp, &Li, &Lv);
 
-        fclose(f_matrix);
+        // fclose(f_matrix);
+        Ln = 100000;
+        blockDim = 16;
+        create_matrix_csr(Ln, &Lnz, &Lp, &Li, &Lv, &Bn, &Bp, &Br, &Bc);
+        csr_to_bcsr(Ln, Lv, Li, Lp, &bcsrVal, &bcsrColInd, &bcsrRowPtr, &bcsrRowInd, blockDim, data_direction);
+        num_block_row = (Ln - 1) / blockDim + 1;
+        // int num_block = bcsrRowPtr[num_block_row];
+        // print_double(Lv, Lnz);
+        // print_int(Li, Lnz);
+        // print_int(Lp, Ln + 1);
+        // print_double(bcsrVal, num_block * blockDim * blockDim);
+        // print_int(bcsrColInd, num_block);
+        // print_int(bcsrRowPtr, num_block_row + 1);
+        // exit(0);
 
         if (vector_file != NULL)
         {
@@ -137,7 +166,7 @@ int main(int argc, char **argv)
             x = (double *)malloc(xn * sizeof(double));
             for (int i = 0; i < xn; i++)
             {
-                x[i] = 1.0;
+                x[i] = (double)rand() / RAND_MAX * 2.0 - 1.0;
             }
         }
 
@@ -263,22 +292,33 @@ int main(int argc, char **argv)
         else if (mode == OPENACC && algorithm == SPARSE_MV)
         {
             start = omp_get_wtime();
+            spmv_csr_openacc_null(Ln, Lp, Li, Lv, b, x);
+            end = omp_get_wtime();
+            float temp = (end - start) * 1000;
+            
+
+            start = omp_get_wtime();
             spmv_csr_openacc(Ln, Lp, Li, Lv, b, x);
             end = omp_get_wtime();
-            time_msec[i] = (end - start) * 1000;
+            time_msec[i] = (end - start) * 1000 - temp;
+
+            printf("%f %f\n", temp, (end - start) * 1000);
         }
         else if (mode == NAIVE && algorithm == SPARSE_MV)
         {
             start = omp_get_wtime();
             spmv_csr_cusparse(Ln, Lp, Li, Lv, b, x);
-            
+            //spmv_bcsr_cusparse(Ln, num_block_row, blockDim, bcsrRowPtr, bcsrColInd, bcsrVal, b, x, data_direction);
+
             end = omp_get_wtime();
             time_msec[i] = (end - start) * 1000;
         }
         else if (mode == CUDA && algorithm == SPARSE_MV)
         {
             start = omp_get_wtime();
-            spmv_csr_cuda(Ln, Lp, Li, Lv, b, x);
+            //spmv_csr_cuda(Ln, Lp, Li, Lv, b, x);
+            //spmv_csr_cuda_opt(Ln, Lp, Li, Lv, b, x);
+            spmv_bcsr_cuda(Ln, blockDim, bcsrRowPtr, bcsrColInd, bcsrRowInd, bcsrVal, b, x , data_direction);
             
             end = omp_get_wtime();
             time_msec[i] = (end - start) * 1000;

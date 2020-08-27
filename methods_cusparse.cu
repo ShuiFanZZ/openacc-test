@@ -1,4 +1,8 @@
 #include "methods_cusparse.h"
+enum DATA_DIRECTION{
+    row_major = 0,
+    column_major = 1,
+};
 
 void spmv_csr_cusparse(int n, int *Ap, int *Ai, double *Ax, double *x, double *y)
 {
@@ -76,13 +80,88 @@ void spmv_csr_cusparse(int n, int *Ap, int *Ai, double *Ax, double *x, double *y
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&transfer_out, start, stop);
     // print timing results
-    printf("%15.2f %15.2f %15.2f\n", transfer_in,
+    printf("%15.5f %15.5f %15.5f\n", transfer_in,
             computation_time, transfer_out);
 
     cudaFree(buffer);
     cudaFree(csrRowPtrA);
     cudaFree(csrColIndA);
     cudaFree(valA);
+    cudaFree(valx);
+    cudaFree(valy);
+}
+
+void spmv_bcsr_cusparse(int n, int nb, int blockDim, int *Bp, int *Bi, double *Bx, double *x, double *y, int direction)
+{
+    int num_block = Bp[nb];
+    cusparseHandle_t handle = 0;
+    cusparseCreate(&handle);
+    cusparseStatus_t status = CUSPARSE_STATUS_SUCCESS;
+
+    cusparseDirection_t dir = CUSPARSE_DIRECTION_ROW;
+    if (direction == column_major)
+    {
+        dir = CUSPARSE_DIRECTION_COLUMN;
+    }
+    
+
+    float transfer_in, computation_time, transfer_out;
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+
+    int *bcsrRowPtr, *bcsrColInd;
+    double *bcsrVal, *valx, *valy; 
+    cudaEventRecord(start);
+    cudaMalloc((void **)&bcsrRowPtr, (nb + 1) * sizeof(int));
+    cudaMalloc((void **)&bcsrColInd, num_block * sizeof(int));
+    cudaMalloc((void **)&bcsrVal, num_block * blockDim * blockDim * sizeof(double));
+    cudaMalloc((void **)&valx, nb * blockDim * sizeof(double));
+    cudaMalloc((void **)&valy, nb * blockDim * sizeof(double));
+    cudaMemcpy(bcsrRowPtr, Bp, (nb + 1) * sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy(bcsrColInd, Bi, num_block * sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy(bcsrVal, Bx, num_block * blockDim * blockDim * sizeof(double), cudaMemcpyHostToDevice);
+    cudaMemcpy(valx, x, n * sizeof(double), cudaMemcpyHostToDevice);
+    cudaMemcpy(valy, y, n * sizeof(double), cudaMemcpyHostToDevice);
+
+	cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&transfer_in, start, stop);
+
+    cudaEventRecord(start);
+    double alpha = 1.0;
+    double beta  = 0.0;
+    cusparseMatDescr_t descr;
+    cusparseCreateMatDescr(&descr);
+    cusparseSetMatIndexBase(descr, CUSPARSE_INDEX_BASE_ZERO);
+    cusparseSetMatType(descr, CUSPARSE_MATRIX_TYPE_GENERAL);
+    
+    status = cusparseDbsrmv(handle, dir, CUSPARSE_OPERATION_NON_TRANSPOSE, 
+        nb, nb, num_block, &alpha, 
+        descr, bcsrVal, bcsrRowPtr, bcsrColInd, blockDim, valx, &beta, valy);
+    
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&computation_time, start, stop);
+
+    if (status != CUSPARSE_STATUS_SUCCESS)
+    {
+        printf("CuSparse bsrmv failed.\n");
+        exit(-1);
+    }
+
+    cudaEventRecord(start);
+    cudaMemcpy(y, valy, n * sizeof(double), cudaMemcpyDeviceToHost);
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&transfer_out, start, stop);
+    // print timing results
+    printf("%15.5f %15.5f %15.5f\n", transfer_in,
+            computation_time, transfer_out);
+
+    cudaFree(bcsrRowPtr);
+    cudaFree(bcsrColInd);
+    cudaFree(bcsrVal);
     cudaFree(valx);
     cudaFree(valy);
 }

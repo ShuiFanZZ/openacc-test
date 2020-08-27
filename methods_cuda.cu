@@ -1,4 +1,8 @@
 #include "methods_cuda.h"
+enum DATA_DIRECTION{
+    row_major = 0,
+    column_major = 1,
+};
 
 __global__ void solve_level_csr(int start, int end, int *levelSet, int *Lp, int *Li, double *Lx, double *x)
 {
@@ -117,11 +121,11 @@ spmv_csr_vector_kernel(const int num_rows,
                        double *y)
 {
     __shared__ volatile double vals[1024];
-    int thread_id = blockDim.x * blockIdx.x + threadIdx.x; // global thread index
-    int warp_id = thread_id / 32;                          // global warp index
-    int lane = thread_id & (32 - 1);                       // thread index within the warp
+    const int thread_id = blockDim.x * blockIdx.x + threadIdx.x; // global thread index
+    const int warp_id = thread_id / 32;                          // global warp index
+    const int lane = thread_id & (32 - 1);                       // thread index within the warp
     // each warp process one row
-    int row = warp_id;
+    const int row = warp_id;
     vals[threadIdx.x] = 0;
     
     if (row < num_rows)
@@ -337,7 +341,7 @@ __global__ void spmv_csr_adaptive_kernel(double *d_val, double *d_vector, int *d
     }
 }
 
-void spmv_csr_cuda_opt(int n, int *Ap, int *Ai, double *Ax, double *x, double *y)
+void spmv_csr_cuda_adaptive(int n, int *Ap, int *Ai, double *Ax, double *x, double *y)
 {
     int nz = Ap[n];
     int *csrRowPtrA, *csrColIndA;
@@ -400,4 +404,143 @@ void spmv_csr_cuda_opt(int n, int *Ap, int *Ai, double *Ax, double *x, double *y
     cudaFree(valy);
     cudaFree(d_rowBlocks);
     free(rowBlocks);
+}
+
+
+
+__global__ void bcsr_spmv_kernel_thread_per_row_column_major_matrix (
+  int n_block_rows,
+  int bs,
+  const int * __restrict__ col_ids,
+  const int * __restrict__ row_ptr,
+  const double * __restrict__ data,
+  const double * __restrict__ x,
+  double * __restrict__ y)
+{
+  const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  const int row = idx % bs;
+  const int block_row = idx / bs;
+  const int first_block = row_ptr[block_row];
+  const int last_block = row_ptr[block_row + 1];
+
+  if (row < bs && block_row < n_block_rows)
+    {
+      double local_out = 0.0;
+
+      for (int block = first_block; block < last_block; block++)
+        {
+          const int first_col = col_ids[block] * bs;
+          for (int col = 0; col < bs; col++)
+            local_out += x[first_col + col] * data[block * bs * bs + col * bs + row];
+        }
+
+      y[block_row * bs + row] = local_out;
+    }
+}
+
+__global__ void bcsr_spmv_kernel_thread_per_row_row_major_matrix (
+  int n_block_rows,
+  int bs,
+  const int * __restrict__ col_ids,
+  const int * __restrict__ row_ptr,
+  const double * __restrict__ data,
+  const double * __restrict__ x,
+  double *y)
+{
+  const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  const int row = idx % bs;
+  const int block_row = idx / bs;
+  const int first_block = row_ptr[block_row];
+  const int last_block = row_ptr[block_row + 1];
+
+  if (row < bs && block_row < n_block_rows)
+    {
+      double local_out = 0.0;
+
+      for (int block = first_block; block < last_block; block++)
+        {
+          const int first_col = col_ids[block] * bs;
+          for (int col = 0; col < bs; col++)
+            local_out += x[first_col + col] * data[block * bs * bs + row * bs + col];
+        }
+
+      y[block_row * bs + row] = local_out;
+    }
+}
+
+
+
+void spmv_bcsr_cuda(int n, int blockDim, int *Bp, int *Bi, int* Br, double *Bx, double *x, double *y, int direction)
+{
+    int Bn = (n - 1) / blockDim + 1;
+    int num_block = Bp[Bn];
+    double *valB, *valx, *valy; 
+    int *d_Bp, *d_Bi, *d_Br;
+    float transfer_in, computation_time, transfer_out;
+
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+
+    cudaEventRecord(start);
+    cudaMalloc((void **)&valB, num_block * (blockDim * blockDim) * sizeof(double));
+    cudaMalloc((void **)&valx, Bn * blockDim * sizeof(double));
+    cudaMalloc((void **)&valy, Bn * blockDim * sizeof(double));
+    cudaMalloc((void **)&d_Bp, (Bn + 1) * sizeof(int));
+    cudaMalloc((void **)&d_Bi, num_block * sizeof(int));
+    cudaMalloc((void **)&d_Br, num_block * sizeof(int));
+    cudaMemcpy(valB, Bx, num_block * (blockDim * blockDim) * sizeof(double), cudaMemcpyHostToDevice);
+    cudaMemcpy(valx, x, Bn * blockDim * sizeof(double), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_Bp, Bp, (Bn + 1) * sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_Bi, Bi, num_block * sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_Br, Br, num_block * sizeof(int), cudaMemcpyHostToDevice);
+
+
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&transfer_in, start, stop);
+
+
+    cudaEventRecord(start);
+
+    int Blocks = (Bn * blockDim - 1) / BLOCK_DIM + 1;
+    if (direction == row_major)
+    {
+        bcsr_spmv_kernel_thread_per_row_row_major_matrix<<<Blocks, BLOCK_DIM>>>(
+            Bn, blockDim, d_Bi, d_Bp, valB, valx, valy
+        );
+    }else
+    {
+        bcsr_spmv_kernel_thread_per_row_column_major_matrix<<<Blocks*32, BLOCK_DIM>>>(
+            Bn, blockDim, d_Bi, d_Bp, valB, valx, valy
+        );
+    }
+
+
+    cudaError_t error = cudaGetLastError();
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&computation_time, start, stop);
+    if (error != cudaSuccess)
+    {
+        printf("CUDA error: %s\n", cudaGetErrorString(error));
+        exit(-1);
+    }
+
+    cudaEventRecord(start);
+    cudaMemcpy(y, valy, n * sizeof(double), cudaMemcpyDeviceToHost);
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&transfer_out, start, stop);
+    
+    // print timing results
+    printf("%15.5f %15.5f %15.5f\n", transfer_in,
+            computation_time, transfer_out);
+
+    cudaFree(d_Bp);
+    cudaFree(d_Bi);
+    cudaFree(d_Br);
+    cudaFree(valB);
+    cudaFree(valx);
+    cudaFree(valy);
 }
