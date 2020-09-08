@@ -126,17 +126,132 @@ void read_matrix_csr(FILE* f, int* Ln, int* Lnz, int** Lp, int** Li, double** Lv
     {
         (*Lp)[i] = count;
         struct Entry *entry_ptr = rows[i];
-
+        struct Entry *old_ptr;
         while(entry_ptr != NULL)
         {
             (*Lv)[count] = entry_ptr->val;
             (*Li)[count] = entry_ptr->col;
             count++;
+            old_ptr = entry_ptr;
             entry_ptr = entry_ptr->next;
+            free(old_ptr);
         }
     }
 
+    free(rows);
+
     (*Lp)[N] = nz;
+
+}
+
+
+void read_matrix_csr_sym(FILE* f, int* Ln, int* Lnz, int** Lp, int** Li, double** Lv)
+{
+    int M, N, nz;
+    read_mtx_header(f, &M, &N, &nz);
+
+    *Ln = N;
+    
+
+    struct Entry **rows = (struct Entry**)malloc(N * sizeof(struct Entry*));
+    for (int i = 0; i < N; i++) {
+        rows[i] = NULL;
+    }
+
+    int row, col;
+    double val;
+    int index = 0, p = 0;
+    int actual_nz = nz;
+    for (int i = 0; i < nz; i++)
+    {
+        if (fscanf(f, "%d %d %lg\n", &row, &col, &val) != 3)
+        {
+            printf("Matrix format is broken.\n");
+            exit(-1);
+        }
+        struct Entry entry;
+        entry.row = row - 1;
+        entry.col = col - 1;
+        entry.val = val;
+        entry.next = NULL;
+
+
+        if (rows[entry.row] == NULL)
+        {
+            rows[entry.row] = malloc(sizeof(struct Entry));
+            rows[entry.row]->row = entry.row;
+            rows[entry.row]->col = entry.col;
+            rows[entry.row]->val = entry.val;
+            rows[entry.row]->next = entry.next;
+        }
+        else
+        {
+            struct Entry* entry_ptr = rows[entry.row];
+            while (entry_ptr->next != NULL) {
+                entry_ptr = entry_ptr->next;
+            }
+            entry_ptr->next = malloc(sizeof(struct Entry));
+            entry_ptr->next->row = entry.row;
+            entry_ptr->next->col = entry.col;
+            entry_ptr->next->val = entry.val;
+            entry_ptr->next->next = entry.next;
+        }
+
+
+        //symmetric
+        if (entry.col < entry.row)
+        {
+            if (rows[entry.col] == NULL)
+            {
+                rows[entry.col] = malloc(sizeof(struct Entry));
+                rows[entry.col]->row = entry.col;
+                rows[entry.col]->col = entry.row;
+                rows[entry.col]->val = entry.val;
+                rows[entry.col]->next = entry.next;
+            }
+            else
+            {
+                struct Entry *entry_ptr = rows[entry.col];
+                while (entry_ptr->next != NULL)
+                {
+                    entry_ptr = entry_ptr->next;
+                }
+                entry_ptr->next = malloc(sizeof(struct Entry));
+                entry_ptr->next->row = entry.col;
+                entry_ptr->next->col = entry.row;
+                entry_ptr->next->val = entry.val;
+                entry_ptr->next->next = entry.next;
+            }
+
+            actual_nz ++;
+        }
+    }
+
+    *Lv = (double*)malloc(actual_nz * sizeof(double));
+    *Li = (int*)malloc(actual_nz * sizeof(int));
+    *Lp = (int*)malloc((N + 1) * sizeof(int));
+
+    int count = 0;
+    for (int i = 0; i < M; i++)
+    {
+        (*Lp)[i] = count;
+        struct Entry *entry_ptr = rows[i];
+        struct Entry *old_ptr;
+        while(entry_ptr != NULL)
+        {
+            (*Lv)[count] = entry_ptr->val;
+            (*Li)[count] = entry_ptr->col;
+            count++;
+            old_ptr = entry_ptr;
+            entry_ptr = entry_ptr->next;
+            free(old_ptr);
+        }
+        
+    }
+    free(rows);
+
+    *Lnz = actual_nz;
+    (*Lp)[N] = actual_nz;
 
 }
 

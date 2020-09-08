@@ -469,6 +469,179 @@ __global__ void bcsr_spmv_kernel_thread_per_row_row_major_matrix (
 }
 
 
+__global__ void bcsr_spmv_kernel_warp_per_row_column_major (
+  int n_block_rows,
+  int bs,
+  const int * __restrict__ col_ids,
+  const int * __restrict__ row_ptr,
+  const double * __restrict__ data,
+  const double * __restrict__ x,
+  double * __restrict__ y)
+{
+  const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  const int lane = idx % 32;
+  const int warp = idx / 32;
+  const int block_row = warp / bs;
+  __shared__ volatile double partial_sums[1024];
+  if (block_row < n_block_rows)
+  {
+      const int first_block = row_ptr[block_row];
+      const int last_block = row_ptr[block_row + 1];
+
+      int r = warp % bs;
+
+      double local_out = 0.0;
+
+      for (int col = first_block * bs + lane; col < last_block * bs; col += 32)
+      {
+          const int block = col / bs;
+          const int c = col % bs;
+
+          const double value = data[col * bs + r];
+          const double x_value = x[col_ids[block] * bs + c];
+          local_out += x_value * value;
+      }
+
+      partial_sums[threadIdx.x] = local_out;
+
+      if (lane < 16)
+          partial_sums[threadIdx.x] += partial_sums[threadIdx.x + 16];
+      if (lane < 8)
+          partial_sums[threadIdx.x] += partial_sums[threadIdx.x + 8];
+      if (lane < 4)
+          partial_sums[threadIdx.x] += partial_sums[threadIdx.x + 4];
+      if (lane < 2)
+          partial_sums[threadIdx.x] += partial_sums[threadIdx.x + 2];
+      if (lane < 1)
+          partial_sums[threadIdx.x] += partial_sums[threadIdx.x + 1];
+
+      if (lane == 0)
+          y[warp] = partial_sums[threadIdx.x];
+  }
+}
+
+__global__ void bcsr_spmv_kernel_warp_per_row_row_major (
+  int n_block_rows,
+  int bs,
+  const int * __restrict__ col_ids,
+  const int * __restrict__ row_ptr,
+  const double * __restrict__ data,
+  const double * __restrict__ x,
+  double * __restrict__ y)
+{
+  const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  const int lane = idx % 32;
+  const int warp = idx / 32;
+  const int block_row = warp / bs;
+  __shared__ volatile double partial_sums[1024];
+  if (block_row < n_block_rows)
+  {
+      const int first_block = row_ptr[block_row];
+      const int last_block = row_ptr[block_row + 1];
+
+      int r = warp % bs;
+
+      double local_out = 0.0;
+
+      for (int col = first_block * bs + lane; col < last_block * bs; col += 32)
+      {
+          const int block = col / bs;
+          const int c = col % bs;
+
+          const double value = data[block * bs * bs + r * bs + c];
+          const double x_value = x[col_ids[block] * bs + c];
+          local_out += x_value * value;
+      }
+
+      partial_sums[threadIdx.x] = local_out;
+
+      if (lane < 16)
+          partial_sums[threadIdx.x] += partial_sums[threadIdx.x + 16];
+      if (lane < 8)
+          partial_sums[threadIdx.x] += partial_sums[threadIdx.x + 8];
+      if (lane < 4)
+          partial_sums[threadIdx.x] += partial_sums[threadIdx.x + 4];
+      if (lane < 2)
+          partial_sums[threadIdx.x] += partial_sums[threadIdx.x + 2];
+      if (lane < 1)
+          partial_sums[threadIdx.x] += partial_sums[threadIdx.x + 1];
+
+      if (lane == 0)
+          y[warp] = partial_sums[threadIdx.x];
+  }
+}
+
+
+
+void bcsr_spmv_kernel_warp_per_row_row_major_test(
+  int blocks,
+  int n,
+  int n_block_rows,
+  int bs,
+  const int * __restrict__ col_ids,
+  const int * __restrict__ row_ptr,
+  const double * __restrict__ data,
+  const double * __restrict__ x,
+  double * __restrict__ y)
+{
+    for (int i = 0; i < blocks; i++)
+    {
+        double partial_sums[1024];
+        for (int threadId = 0; threadId < BLOCK_DIM; threadId++)
+        {
+            partial_sums[threadId] = 0.0;
+            const int warp = (i * BLOCK_DIM + threadId) / 32;
+            const int block_row = warp / 32;
+            const int lane = threadId % 32;
+            if (block_row < n_block_rows)
+            {
+                
+                const int first_block = row_ptr[block_row];
+                const int last_block = row_ptr[block_row + 1];
+
+                int r = warp % bs;
+
+                double local_out = 0.0;
+
+                for (int col = first_block * bs + lane; col < last_block * bs; col += 32)
+                {
+                    const int block = col / bs;
+                    const int c = col % bs;
+
+                    const double value = data[block * bs *bs + r * bs + c];
+                    const double x_value = x[col_ids[block] * bs + c];
+                    local_out += x_value * value;
+                }
+
+                partial_sums[threadId] = local_out;
+
+            }
+        }
+        for (int threadId = 0; threadId < BLOCK_DIM; threadId++)
+        {
+            const int warp = (i * BLOCK_DIM + threadId) / 32;
+            const int block_row = warp;
+            if (block_row < n)
+            {
+                y[block_row] = 0;
+            }
+            
+            
+        }
+        
+        for (int threadId = 0; threadId < BLOCK_DIM; threadId++)
+        {
+            const int warp = (i * BLOCK_DIM + threadId) / 32;
+            const int block_row = warp;
+            if (block_row < n)
+            {
+                y[block_row] += partial_sums[threadId];
+            }
+            
+        }
+    }
+    
+}
 
 void spmv_bcsr_cuda(int n, int blockDim, int *Bp, int *Bi, int* Br, double *Bx, double *x, double *y, int direction)
 {
@@ -503,17 +676,26 @@ void spmv_bcsr_cuda(int n, int blockDim, int *Bp, int *Bi, int* Br, double *Bx, 
 
     cudaEventRecord(start);
 
-    int Blocks = (Bn * blockDim - 1) / BLOCK_DIM + 1;
+    // int Blocks = (Bn * blockDim - 1) / BLOCK_DIM + 1;
+    int Blocks = (Bn * blockDim - 1) / 32 + 1;
     if (direction == row_major)
     {
-        bcsr_spmv_kernel_thread_per_row_row_major_matrix<<<Blocks, BLOCK_DIM>>>(
+        // bcsr_spmv_kernel_thread_per_row_row_major_matrix<<<Blocks, BLOCK_DIM>>>(
+        //     Bn, blockDim, d_Bi, d_Bp, valB, valx, valy
+        // );
+        bcsr_spmv_kernel_warp_per_row_row_major<<<Blocks, BLOCK_DIM>>>(
             Bn, blockDim, d_Bi, d_Bp, valB, valx, valy
         );
     }else
     {
-        bcsr_spmv_kernel_thread_per_row_column_major_matrix<<<Blocks*32, BLOCK_DIM>>>(
+        // bcsr_spmv_kernel_thread_per_row_column_major_matrix<<<Blocks, BLOCK_DIM>>>(
+        //     Bn, blockDim, d_Bi, d_Bp, valB, valx, valy
+        // );
+        bcsr_spmv_kernel_warp_per_row_column_major<<<Blocks, BLOCK_DIM>>>(
             Bn, blockDim, d_Bi, d_Bp, valB, valx, valy
         );
+
+        
     }
 
 
@@ -536,6 +718,11 @@ void spmv_bcsr_cuda(int n, int blockDim, int *Bp, int *Bi, int* Br, double *Bx, 
     // print timing results
     printf("%15.5f %15.5f %15.5f\n", transfer_in,
             computation_time, transfer_out);
+
+    // Blocks = (Bn * blockDim - 1) / 32 + 1;
+    //     bcsr_spmv_kernel_warp_per_row_row_major_test(Blocks, n,
+    //         Bn, blockDim, Bi, Bp, Bx, x, y
+    //     );
 
     cudaFree(d_Bp);
     cudaFree(d_Bi);

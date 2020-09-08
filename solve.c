@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdbool.h> 
 #include <stdlib.h>
 #include <string.h>
 
@@ -65,6 +66,8 @@ int main(int argc, char **argv)
     int algorithm = SPARSE_SOLVE;
     int write_output = 0;
     int matrix_size = 0;
+    bool use_block = false;
+    int generate_matrix = 0;
 
     char *matrix_file = NULL, *vector_file = NULL;
     FILE *f_matrix, *f_vector;
@@ -101,6 +104,12 @@ int main(int argc, char **argv)
         case 'O':
             mode = OPENACC;
             break;
+        case 'B':
+            use_block = true;
+            break;
+        case 'G':
+            generate_matrix = atoi(optarg);
+            break;
         case 'o':
             write_output = 1;
             output = optarg;
@@ -129,22 +138,33 @@ int main(int argc, char **argv)
 
     if (algorithm == SPARSE_SOLVE || algorithm == SPARSE_MV)
     {
-        // f_matrix = fopen(matrix_file, "r");
+        if (generate_matrix == 0)
+        {
+            f_matrix = fopen(matrix_file, "r");
 
-        // if (f_matrix == NULL)
-        // {
-        //     printf("Cannot read input file!\n");
-        //     exit(2);
-        // }
+            if (f_matrix == NULL)
+            {
+                printf("Cannot read input file!\n");
+                exit(2);
+            }
 
-        // read_matrix_csr(f_matrix, &Ln, &Lnz, &Lp, &Li, &Lv);
+            read_matrix_csr_sym(f_matrix, &Ln, &Lnz, &Lp, &Li, &Lv);
 
-        // fclose(f_matrix);
-        Ln = 100000;
-        blockDim = 16;
-        create_matrix_csr(Ln, &Lnz, &Lp, &Li, &Lv, &Bn, &Bp, &Br, &Bc);
-        csr_to_bcsr(Ln, Lv, Li, Lp, &bcsrVal, &bcsrColInd, &bcsrRowPtr, &bcsrRowInd, blockDim, data_direction);
-        num_block_row = (Ln - 1) / blockDim + 1;
+            fclose(f_matrix);
+        }
+        else
+        {
+            Ln = generate_matrix;
+            create_matrix_csr(Ln, &Lnz, &Lp, &Li, &Lv, &Bn, &Bp, &Br, &Bc);
+        }
+        
+
+        if (use_block)
+        {
+            csr_to_bcsr(Ln, Lv, Li, Lp, &bcsrVal, &bcsrColInd, &bcsrRowPtr, &bcsrRowInd, blockDim, data_direction);
+            num_block_row = (Ln - 1) / blockDim + 1;
+        }
+
         // int num_block = bcsrRowPtr[num_block_row];
         // print_double(Lv, Lnz);
         // print_int(Li, Lnz);
@@ -304,22 +324,33 @@ int main(int argc, char **argv)
 
             printf("%f %f\n", temp, (end - start) * 1000);
         }
-        else if (mode == NAIVE && algorithm == SPARSE_MV)
+        else if (mode == NAIVE && algorithm == SPARSE_MV && !use_block)
         {
             start = omp_get_wtime();
             spmv_csr_cusparse(Ln, Lp, Li, Lv, b, x);
-            //spmv_bcsr_cusparse(Ln, num_block_row, blockDim, bcsrRowPtr, bcsrColInd, bcsrVal, b, x, data_direction);
 
             end = omp_get_wtime();
             time_msec[i] = (end - start) * 1000;
         }
-        else if (mode == CUDA && algorithm == SPARSE_MV)
+        else if (mode == NAIVE && algorithm == SPARSE_MV && use_block)
         {
             start = omp_get_wtime();
-            //spmv_csr_cuda(Ln, Lp, Li, Lv, b, x);
-            //spmv_csr_cuda_opt(Ln, Lp, Li, Lv, b, x);
+            spmv_bcsr_cusparse(Ln, num_block_row, blockDim, bcsrRowPtr, bcsrColInd, bcsrVal, b, x, data_direction);
+
+            end = omp_get_wtime();
+            time_msec[i] = (end - start) * 1000;
+        }
+        else if (mode == CUDA && algorithm == SPARSE_MV && !use_block)
+        {
+            start = omp_get_wtime();
+            spmv_csr_cuda(Ln, Lp, Li, Lv, b, x);
+            end = omp_get_wtime();
+            time_msec[i] = (end - start) * 1000;
+        }
+        else if (mode == CUDA && algorithm == SPARSE_MV && use_block)
+        {
+            start = omp_get_wtime();
             spmv_bcsr_cuda(Ln, blockDim, bcsrRowPtr, bcsrColInd, bcsrRowInd, bcsrVal, b, x , data_direction);
-            
             end = omp_get_wtime();
             time_msec[i] = (end - start) * 1000;
         }
